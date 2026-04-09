@@ -1,0 +1,46 @@
+{
+  "name": "wikiclaw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent-first personal knowledge base with live chat, Obsidian-compatible wiki output, and local/cloud LLM support.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,client -c cyan,yellow \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "vite build && node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist-server', { recursive: true, force: true });\" && tsc -p server/tsconfig.json",
+    "preview": "vite preview",
+    "start": "node dist-server/server/index.js"
+  },
+  "keywords": [
+    "wiki",
+    "llm",
+    "obsidian",
+    "chat"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "pdf-parse": "^2.4.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.7.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.10"
+  }
+}
