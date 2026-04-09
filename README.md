@@ -1,5 +1,9 @@
 # WikiClaw
 
+[![CI status](https://github.com/DaniyarM/WikiClaw/actions/workflows/ci.yml/badge.svg)](https://github.com/DaniyarM/WikiClaw/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/DaniyarM/WikiClaw?label=GitHub%20release)](https://github.com/DaniyarM/WikiClaw/releases)
+[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
 WikiClaw is an agent-first personal knowledge base that turns chat, files, and web research into a persistent Obsidian-compatible wiki.
 
 It was inspired by Andrej Karpathy's LLM wiki / idea-file direction, but WikiClaw is not just a prompt or a thin demo. It is a standalone interface and workflow for running your own compounding knowledge base: live agent activity, natural-language ingest and maintenance, multi-wiki management, and clean markdown output you can open directly in Obsidian.
