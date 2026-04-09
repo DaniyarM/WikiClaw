@@ -1,8 +1,16 @@
 # WikiClaw
 
-[![CI status](https://github.com/DaniyarM/WikiClaw/actions/workflows/ci.yml/badge.svg)](https://github.com/DaniyarM/WikiClaw/actions/workflows/ci.yml)
-[![GitHub release](https://img.shields.io/github/v/release/DaniyarM/WikiClaw?label=GitHub%20release)](https://github.com/DaniyarM/WikiClaw/releases)
-[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+<p align="center">
+  <a href="https://github.com/DaniyarM/WikiClaw/actions/workflows/ci.yml?branch=main">
+    <img src="https://img.shields.io/github/actions/workflow/status/DaniyarM/WikiClaw/ci.yml?branch=main&style=for-the-badge" alt="CI status">
+  </a>
+  <a href="https://github.com/DaniyarM/WikiClaw/releases">
+    <img src="https://img.shields.io/github/v/release/DaniyarM/WikiClaw?style=for-the-badge&include_prereleases" alt="GitHub release">
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License">
+  </a>
+</p>
 
 WikiClaw is an agent-first personal knowledge base that turns chat, files, and web research into a persistent Obsidian-compatible wiki.
 
