@@ -17,6 +17,36 @@ function isSystemUntitled(title: string): boolean {
   return title === "New chat" || title === "Новый чат";
 }
 
+function RenameIcon() {
+  return (
+    <svg className="history-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M11.8 1.8a1.7 1.7 0 0 1 2.4 2.4l-7.6 7.6-3.3.9.9-3.3 7.6-7.6Zm1.4 1-1.4-1.4a.7.7 0 0 0-1 0L9.7 2.5l2.4 2.4 1.1-1.1a.7.7 0 0 0 0-1Zm-2 2.8L8.8 3.2 4.9 7.1l2.4 2.4 3.9-3.9ZM4.4 8l-.6 2 .1.1 2-.6L4.4 8ZM2.5 13.5h11"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DeleteIcon() {
+  return (
+    <svg className="history-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M3.5 4.5h9M6.2 2.8h3.6M5.2 4.5l.4 7h4.8l.4-7M6.7 6.3v3.6M9.3 6.3v3.6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function ChatSidebar(props: ChatSidebarProps) {
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
@@ -174,9 +204,9 @@ export function ChatSidebar(props: ChatSidebarProps) {
                       onClick={() => props.onSelect(chat.id)}
                       type="button"
                       disabled={props.busy && chat.id !== props.activeChatId}
+                      title={chat.lastMessagePreview ? `${displayTitle(chat)}\n${chat.lastMessagePreview}` : displayTitle(chat)}
                     >
                       <strong>{displayTitle(chat)}</strong>
-                      <span>{chat.lastMessagePreview || "..."}</span>
                     </button>
 
                     <div className="history-item-actions">
@@ -186,8 +216,9 @@ export function ChatSidebar(props: ChatSidebarProps) {
                         disabled={props.busy || pendingChatId === chat.id}
                         type="button"
                         title={props.dictionary.renameChat}
+                        aria-label={props.dictionary.renameChat}
                       >
-                        {props.dictionary.renameChat}
+                        <RenameIcon />
                       </button>
                       <button
                         className="ghost-button history-icon-button destructive"
@@ -195,8 +226,9 @@ export function ChatSidebar(props: ChatSidebarProps) {
                         disabled={props.busy || pendingChatId === chat.id}
                         type="button"
                         title={props.dictionary.deleteChat}
+                        aria-label={props.dictionary.deleteChat}
                       >
-                        {props.dictionary.deleteChat}
+                        <DeleteIcon />
                       </button>
                     </div>
                   </div>
