@@ -11,6 +11,8 @@ export interface LlmRequest {
   temperature?: number;
 }
 
+const LLM_CONNECT_TIMEOUT_MS = 15_000;
+
 function joinUrl(baseUrl: string, suffix: string): string {
   return `${baseUrl.replace(/\/+$/g, "")}${suffix}`;
 }
@@ -71,8 +73,87 @@ function assertProviderSettings(settings: AppSettings): void {
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : `${error ?? "Unknown error"}`;
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = LLM_CONNECT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`LLM request timed out after ${timeoutMs}ms`)), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function isLlmTemporarilyUnavailable(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+
+  if (
+    message.includes("base url is not configured") ||
+    message.includes("model is not configured") ||
+    message.includes("model not found") ||
+    message.includes("404") ||
+    message.includes("401") ||
+    message.includes("403")
+  ) {
+    return false;
+  }
+
+  return (
+    message.includes("fetch failed") ||
+    message.includes("connection refused") ||
+    message.includes("econnrefused") ||
+    message.includes("enotfound") ||
+    message.includes("eai_again") ||
+    message.includes("socket hang up") ||
+    message.includes("timed out") ||
+    message.includes("timeout") ||
+    message.includes("network") ||
+    message.includes("service unavailable") ||
+    message.includes("bad gateway") ||
+    message.includes("gateway timeout") ||
+    message.includes("502") ||
+    message.includes("503") ||
+    message.includes("504") ||
+    message.includes("429")
+  );
+}
+
+export function describeLlmTemporaryUnavailability(settings: AppSettings, error: unknown): string {
+  const baseUrl = settings.baseUrl.trim() || "(empty base URL)";
+  const message = errorMessage(error);
+
+  if (/timed out|timeout/i.test(message)) {
+    return settings.provider === "ollama"
+      ? `Ollama at ${baseUrl} is not responding.`
+      : `The configured LLM endpoint at ${baseUrl} is not responding.`;
+  }
+
+  if (/fetch failed|connection refused|econnrefused|enotfound|eai_again|socket hang up/i.test(message)) {
+    return settings.provider === "ollama"
+      ? `Cannot reach Ollama at ${baseUrl}.`
+      : `Cannot reach the configured LLM endpoint at ${baseUrl}.`;
+  }
+
+  if (/429|502|503|504|service unavailable|bad gateway|gateway timeout/i.test(message)) {
+    return settings.provider === "ollama"
+      ? `Ollama at ${baseUrl} is temporarily unavailable.`
+      : `The configured LLM endpoint at ${baseUrl} is temporarily unavailable.`;
+  }
+
+  return settings.provider === "ollama"
+    ? `Ollama at ${baseUrl} is temporarily unavailable.`
+    : `The configured LLM endpoint at ${baseUrl} is temporarily unavailable.`;
+}
+
 async function callOpenAiCompatible(request: LlmRequest): Promise<string> {
-  const response = await fetch(joinUrl(request.settings.baseUrl, "/chat/completions"), {
+  const response = await fetchWithTimeout(joinUrl(request.settings.baseUrl, "/chat/completions"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -99,7 +180,7 @@ async function callOpenAiCompatible(request: LlmRequest): Promise<string> {
 }
 
 async function callOllama(request: LlmRequest): Promise<string> {
-  const response = await fetch(joinUrl(request.settings.baseUrl, "/api/chat"), {
+  const response = await fetchWithTimeout(joinUrl(request.settings.baseUrl, "/api/chat"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -144,7 +225,7 @@ async function streamOpenAiCompatible(
   request: LlmRequest,
   onToken: (token: string) => void,
 ): Promise<string> {
-  const response = await fetch(joinUrl(request.settings.baseUrl, "/chat/completions"), {
+  const response = await fetchWithTimeout(joinUrl(request.settings.baseUrl, "/chat/completions"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -207,7 +288,7 @@ async function streamOpenAiCompatible(
 }
 
 async function streamOllama(request: LlmRequest, onToken: (token: string) => void): Promise<string> {
-  const response = await fetch(joinUrl(request.settings.baseUrl, "/api/chat"), {
+  const response = await fetchWithTimeout(joinUrl(request.settings.baseUrl, "/api/chat"), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -281,7 +362,7 @@ export async function unloadModel(settings: AppSettings): Promise<void> {
     return;
   }
 
-  const response = await fetch(joinUrl(settings.baseUrl, "/api/generate"), {
+  const response = await fetchWithTimeout(joinUrl(settings.baseUrl, "/api/generate"), {
     method: "POST",
     headers: {
       "content-type": "application/json",

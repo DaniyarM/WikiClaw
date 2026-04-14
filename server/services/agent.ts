@@ -8,7 +8,13 @@ import type {
   WebResearchBundle as StoredWebResearchBundle,
 } from "../../shared/contracts.js";
 import { createId } from "../lib/ids.js";
-import { completeText, streamText, type LlmMessage } from "./llmClient.js";
+import {
+  completeText,
+  describeLlmTemporaryUnavailability,
+  isLlmTemporarilyUnavailable,
+  streamText,
+  type LlmMessage,
+} from "./llmClient.js";
 import {
   appendLogEntry,
   applyWikiWrites,
@@ -23,6 +29,7 @@ import {
 import { enrichResult, sanitizeWebQuery, searchWeb } from "./webSearch.js";
 
 type AgentIntent = "ingest" | "query" | "lint" | "update" | "chat";
+const LLM_RETRY_DELAY_MS = 3_000;
 
 interface PlannerDecision {
   intent: AgentIntent;
@@ -58,6 +65,10 @@ export interface AgentRunResult {
   missingTopics: string[];
   webQueries: string[];
   webResearch: StoredWebResearchBundle[];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createActivity(kind: ActivityItem["kind"], title: string, detail?: string): ActivityItem {
@@ -101,6 +112,11 @@ function getUiText(language: Language) {
       webSearchEmpty: "Web-поиск не дал надёжных результатов",
       writingAnswer: "Формирование ответа",
       writingAnswerDetail: "Ответ выводится в чат.",
+      llmUnavailable: "LLM недоступна",
+      llmUnavailableDetail: (detail: string) =>
+        `${detail} Автоматически переподключаюсь и продолжу работу после восстановления.`,
+      llmRecovered: "Связь с LLM восстановлена",
+      llmRecoveredDetail: "Продолжаю работу с того же шага.",
       heuristicIngest: "Интегрировать приложенные материалы в базу знаний.",
       heuristicLint: "Перепроверить и актуализировать базу знаний: найти пропущенные связи, обновить карточки и выявить пробелы.",
       heuristicUpdate: "Внести запрошенное изменение в wiki.",
@@ -130,6 +146,11 @@ function getUiText(language: Language) {
     webSearchEmpty: "Web search returned no grounded results",
     writingAnswer: "Writing answer",
     writingAnswerDetail: "The reply is being streamed into chat.",
+    llmUnavailable: "LLM unavailable",
+    llmUnavailableDetail: (detail: string) =>
+      `${detail} I will keep retrying automatically and resume work when the model comes back.`,
+    llmRecovered: "LLM connection restored",
+    llmRecoveredDetail: "Resuming work from the same step.",
     heuristicIngest: "Integrate the attached material into the knowledge base.",
     heuristicLint: "Audit and refresh the wiki: repair missed links, update pages when grounded, and report remaining gaps.",
     heuristicUpdate: "Apply the requested wiki update.",
@@ -839,9 +860,11 @@ function detectIntentHeuristically(
   return null;
 }
 
-async function completeJsonWithRetry<T>(settings: AppSettings, messages: LlmMessage[]): Promise<T> {
-  const first = await completeText({
-    settings,
+async function completeJsonWithRetry<T>(
+  execute: (request: { messages: LlmMessage[]; temperature: number }) => Promise<string>,
+  messages: LlmMessage[],
+): Promise<T> {
+  const first = await execute({
     messages,
     temperature: 0.1,
   });
@@ -849,8 +872,7 @@ async function completeJsonWithRetry<T>(settings: AppSettings, messages: LlmMess
   try {
     return JSON.parse(extractJson(first)) as T;
   } catch {
-    const retry = await completeText({
-      settings,
+    const retry = await execute({
       messages: [
         ...messages,
         {
@@ -955,6 +977,47 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     activities.push(activity);
     input.onActivity(activity);
   };
+  const executeLlmWithRecovery = async <T>(
+    operation: () => Promise<T>,
+    options?: {
+      allowRetry?: () => boolean;
+    },
+  ): Promise<T> => {
+    let waitingForRecovery = false;
+
+    while (true) {
+      try {
+        const result = await operation();
+        if (waitingForRecovery) {
+          emit("status", uiText.llmRecovered, uiText.llmRecoveredDetail);
+        }
+        return result;
+      } catch (error) {
+        if (!isLlmTemporarilyUnavailable(error) || (options?.allowRetry && !options.allowRetry())) {
+          throw error;
+        }
+
+        if (!waitingForRecovery) {
+          emit(
+            "warning",
+            uiText.llmUnavailable,
+            uiText.llmUnavailableDetail(describeLlmTemporaryUnavailability(input.settings, error)),
+          );
+          waitingForRecovery = true;
+        }
+
+        await sleep(LLM_RETRY_DELAY_MS);
+      }
+    }
+  };
+  const completeTextWithRecovery = (request: { messages: LlmMessage[]; temperature?: number }) =>
+    executeLlmWithRecovery(() =>
+      completeText({
+        settings: input.settings,
+        messages: request.messages,
+        temperature: request.temperature,
+      }),
+    );
 
   await reindexWiki(input.settings);
   emit("status", uiText.scanComplete, uiText.loadedWiki(input.settings.wikiPath));
@@ -993,7 +1056,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
   } else {
     emit("status", uiText.planningStart, uiText.planningStartDetail);
     try {
-      decision = await completeJsonWithRetry<PlannerDecision>(input.settings, [
+      decision = await completeJsonWithRetry<PlannerDecision>((request) => completeTextWithRecovery(request), [
         {
           role: "system",
           content: plannerPrompt(input.settings.language),
@@ -1096,7 +1159,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     `WEB NOTES:\n${formatWebResearch(activeResearchBundles)}`,
   ].join("\n\n");
 
-  const draft = await completeJsonWithRetry<AgentDraft>(input.settings, [
+  const draft = await completeJsonWithRetry<AgentDraft>((request) => completeTextWithRecovery(request), [
     {
       role: "system",
       content: draftingPrompt(input.settings.language),
@@ -1189,25 +1252,31 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
   let assistantContent = "";
   let streamedAnyToken = false;
   try {
-    assistantContent = await streamText(
+    assistantContent = await executeLlmWithRecovery(
+      () =>
+        streamText(
+          {
+            settings: input.settings,
+            messages: buildFinalAnswerMessages({
+              language: input.settings.language,
+              intent: decision.intent,
+              userRequest: input.userMessage.content,
+              brief: draft.answerBrief || uiText.noAnswer,
+              changedPaths: finalChangedPaths,
+              missingTopics: draft.missingTopics ?? [],
+              webQueries: approvedQueries,
+              webBundles: activeResearchBundles,
+            }),
+            temperature: 0.15,
+          },
+          (token) => {
+            streamedAnyToken = true;
+            assistantContent += token;
+            input.onToken(token);
+          },
+        ),
       {
-        settings: input.settings,
-        messages: buildFinalAnswerMessages({
-          language: input.settings.language,
-          intent: decision.intent,
-          userRequest: input.userMessage.content,
-          brief: draft.answerBrief || uiText.noAnswer,
-          changedPaths: finalChangedPaths,
-          missingTopics: draft.missingTopics ?? [],
-          webQueries: approvedQueries,
-          webBundles: activeResearchBundles,
-        }),
-        temperature: 0.15,
-      },
-      (token) => {
-        streamedAnyToken = true;
-        assistantContent += token;
-        input.onToken(token);
+        allowRetry: () => !streamedAnyToken,
       },
     );
   } catch {

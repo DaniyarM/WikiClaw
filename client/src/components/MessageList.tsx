@@ -150,13 +150,17 @@ export function MessageList(props: MessageListProps) {
 
           {message.role === "assistant" && (message.activities?.length ?? 0) > 0 ? (() => {
             const latestActivity = message.activities?.at(-1);
+            const latestActivityKind = latestActivity?.kind ?? "status";
 
             return (
-              <details className={`activity-panel ${message.pending ? "live" : ""}`} open={message.pending}>
-                <summary className={message.pending ? "live" : ""}>
+              <details
+                className={`activity-panel ${message.pending ? "live" : ""} ${message.pending ? latestActivityKind : ""}`}
+                open={message.pending}
+              >
+                <summary className={`${message.pending ? "live" : ""} ${message.pending ? latestActivityKind : ""}`}>
                   <span>{props.dictionary.thinking}</span>
                   {message.pending ? (
-                    <span className="activity-live-badge">
+                    <span className={`activity-live-badge ${latestActivityKind}`}>
                       <span className="activity-live-dot" />
                       {latestActivity?.title}
                     </span>
