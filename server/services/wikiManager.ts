@@ -194,6 +194,22 @@ function scorePage(entry: WikiPageIndexEntry, tokens: string[]): number {
   }, 0);
 }
 
+function contentPriority(entry: WikiPageIndexEntry): number {
+  if (entry.path.startsWith("pages/")) {
+    return 3;
+  }
+
+  if (entry.path.startsWith("notes/")) {
+    return 2;
+  }
+
+  if (entry.path.startsWith("sources/")) {
+    return 1;
+  }
+
+  return 0;
+}
+
 async function writeGeneratedIndex(settings: AppSettings, entries: WikiPageIndexEntry[]): Promise<void> {
   const dirs = wikiDirs(settings);
   const lines = ["# Index", "", `Total pages: ${entries.length}`, ""];
@@ -355,7 +371,12 @@ export async function searchRelevantPages(
 
   const scored = entries
     .map((entry) => ({ entry, score: scorePage(entry, tokens) }))
-    .sort((a, b) => b.score - a.score || b.entry.updatedAt.localeCompare(a.entry.updatedAt))
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        contentPriority(b.entry) - contentPriority(a.entry) ||
+        b.entry.updatedAt.localeCompare(a.entry.updatedAt),
+    )
     .slice(0, limit)
     .filter((item) => item.score > 0 || tokens.length === 0);
 

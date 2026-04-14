@@ -402,8 +402,33 @@ function inferOperationTitle(operation: FileOperation): string {
   return operation.content.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? path.posix.basename(operation.path, ".md");
 }
 
+function safeResearchFileBase(input: string): string {
+  return input
+    .replace(/^source:\s*/i, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "")
+    .replace(/[. ]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120) || "Research";
+}
+
+function escapeMarkdownLinkText(input: string): string {
+  return input.replace(/([\[\]])/g, "\\$1");
+}
+
+const SOURCE_SECTION_HEADINGS = ["## Источники", "## Sources"] as const;
+const RELATION_SECTION_HEADINGS = ["## Связи", "## Relationships"] as const;
+
+function pickSectionHeading(content: string, headings: readonly string[], preferredHeading: string): string {
+  return headings.find((heading) => new RegExp(`^${heading}$`, "m").test(content)) ?? preferredHeading;
+}
+
 function appendSourceSection(content: string, language: Language, lines: string[]): string {
-  const heading = language === "ru" ? "## Источники" : "## Sources";
+  const heading = pickSectionHeading(
+    content,
+    SOURCE_SECTION_HEADINGS,
+    language === "ru" ? "## Источники" : "## Sources",
+  );
   const sourceBlock = `${heading}\n\n${lines.join("\n")}`;
 
   if (new RegExp(`^${heading}$`, "m").test(content)) {
@@ -423,7 +448,11 @@ function appendRelationSection(
   language: Language,
   references: Array<{ target: string; label?: string }>,
 ): string {
-  const heading = language === "ru" ? "## Связи" : "## Relationships";
+  const heading = pickSectionHeading(
+    content,
+    RELATION_SECTION_HEADINGS,
+    language === "ru" ? "## Связи" : "## Relationships",
+  );
   const lines = [
     ...new Set(
       references.map((reference) =>
@@ -451,6 +480,59 @@ function appendRelationSection(
   return `${content.trimEnd()}\n\n${relationBlock}\n`;
 }
 
+function extractWikiLinkReferences(content: string): Array<{ target: string; label?: string }> {
+  return [...content.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g)]
+    .map((match) => ({
+      target: `${match[1] ?? ""}`.trim(),
+      label: `${match[2] ?? ""}`.trim() || undefined,
+    }))
+    .filter((reference) => reference.target);
+}
+
+function normalizeSourceSectionWikiLinks(
+  content: string,
+  language: Language,
+): { content: string; references: Array<{ target: string; label?: string }> } {
+  const heading = pickSectionHeading(
+    content,
+    SOURCE_SECTION_HEADINGS,
+    language === "ru" ? "## Источники" : "## Sources",
+  );
+  const lines = content.split("\n");
+  const nextLines: string[] = [];
+  const references: Array<{ target: string; label?: string }> = [];
+  let inSources = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed === heading) {
+      inSources = true;
+      nextLines.push(line);
+      continue;
+    }
+
+    if (inSources && /^##\s+/.test(trimmed)) {
+      inSources = false;
+    }
+
+    if (inSources) {
+      const lineReferences = extractWikiLinkReferences(line);
+      if (lineReferences.length > 0) {
+        references.push(...lineReferences);
+        continue;
+      }
+    }
+
+    nextLines.push(line);
+  }
+
+  return {
+    content: nextLines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd(),
+    references,
+  };
+}
+
 function sanitizeUnknownWikiLinks(content: string, knownTargets: Set<string>): string {
   return content.replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_match, rawTarget, alias) => {
     const target = `${rawTarget ?? ""}`.trim();
@@ -462,31 +544,19 @@ function sanitizeUnknownWikiLinks(content: string, knownTargets: Set<string>): s
   });
 }
 
-function buildWebSourceOperation(
-  language: Language,
-  webBundles: StoredWebResearchBundle[],
-): FileOperation | null {
+function buildWebSourceOperation(webBundles: StoredWebResearchBundle[]): FileOperation | null {
   if (webBundles.length === 0) {
     return null;
   }
 
-  const primaryQuery = webBundles[0]?.query ?? "web-research";
-  const title =
-    language === "ru"
-      ? `Web research ${primaryQuery}`
-      : `Web research ${primaryQuery}`;
-
-  const lines = [
-    `# ${title}`,
-    "",
-    `Generated: ${new Date().toISOString()}`,
-    "",
-  ];
+  const sourceLabel = webBundles[0]?.query?.trim() || "Research";
+  const title = `Source: ${sourceLabel}`;
+  const lines = [`# ${title}`, "", `Generated: ${new Date().toISOString()}`, ""];
 
   for (const bundle of webBundles) {
     lines.push(`## ${bundle.query}`, "");
     for (const result of bundle.results.slice(0, 5)) {
-      lines.push(`- [${result.title}](${result.url})`);
+      lines.push(`- [${escapeMarkdownLinkText(result.title)}](${result.url})`);
       if (result.snippet) {
         lines.push(`  - ${result.snippet}`);
       }
@@ -495,8 +565,8 @@ function buildWebSourceOperation(
   }
 
   return {
-    path: `sources/${title}.md`,
-    reason: language === "ru" ? "Сохранить web-исследование как источник." : "Persist web research as a source.",
+    path: `sources/Source ${safeResearchFileBase(sourceLabel)}.md`,
+    reason: "Persist the raw web result as a source note.",
     content: `${lines.join("\n").trim()}\n`,
   };
 }
@@ -526,9 +596,6 @@ function groundOperationsWithResearch(options: {
   });
 
   const sourceLines: string[] = [];
-  if (options.sourceOperation) {
-    sourceLines.push(`- [[${path.posix.basename(options.sourceOperation.path, ".md")}]]`);
-  }
   for (const bundle of options.webBundles) {
     for (const result of bundle.results.slice(0, 3)) {
       sourceLines.push(`- ${result.url}`);
@@ -608,9 +675,16 @@ function groundOperationsWithResearch(options: {
         return normalized === operationTitle.toLowerCase() || normalized === operationBase.toLowerCase();
       });
     let content = sanitizeUnknownWikiLinks(operation.content, knownTargets);
+    let sourceSectionReferences: Array<{ target: string; label?: string }> = [];
 
     if (isPage && uniqueSourceLines.length > 0) {
       content = appendSourceSection(content, options.language, uniqueSourceLines);
+    }
+
+    if (isPage) {
+      const normalizedSources = normalizeSourceSectionWikiLinks(content, options.language);
+      content = normalizedSources.content;
+      sourceSectionReferences = normalizedSources.references;
     }
 
     const relationCandidates = isNewPage
@@ -618,6 +692,7 @@ function groundOperationsWithResearch(options: {
       : newPageReferences;
     if (isPage && relationCandidates.length > 0) {
       const relatedReferences = relationCandidates
+        .concat(sourceSectionReferences.map((reference) => ({ target: reference.target, title: reference.label ?? reference.target })))
         .filter(
           (reference, index, list) =>
             list.findIndex(
@@ -1182,7 +1257,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
 
   let groundedOperations = draft.operations ?? [];
   if (decision.needsWikiWrite) {
-    const sourceOperation = buildWebSourceOperation(input.settings.language, activeResearchBundles);
+    const sourceOperation = buildWebSourceOperation(activeResearchBundles);
     groundedOperations = groundOperationsWithResearch({
       language: input.settings.language,
       operations: groundedOperations,
