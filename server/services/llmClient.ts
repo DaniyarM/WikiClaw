@@ -11,7 +11,7 @@ export interface LlmRequest {
   temperature?: number;
 }
 
-const LLM_CONNECT_TIMEOUT_MS = 15_000;
+const LLM_REQUEST_TIMEOUT_MS = 180_000;
 
 function joinUrl(baseUrl: string, suffix: string): string {
   return `${baseUrl.replace(/\/+$/g, "")}${suffix}`;
@@ -77,7 +77,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : `${error ?? "Unknown error"}`;
 }
 
-async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = LLM_CONNECT_TIMEOUT_MS): Promise<Response> {
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = LLM_REQUEST_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error(`LLM request timed out after ${timeoutMs}ms`)), timeoutMs);
 
@@ -112,8 +112,6 @@ export function isLlmTemporarilyUnavailable(error: unknown): boolean {
     message.includes("enotfound") ||
     message.includes("eai_again") ||
     message.includes("socket hang up") ||
-    message.includes("timed out") ||
-    message.includes("timeout") ||
     message.includes("network") ||
     message.includes("service unavailable") ||
     message.includes("bad gateway") ||
@@ -128,12 +126,6 @@ export function isLlmTemporarilyUnavailable(error: unknown): boolean {
 export function describeLlmTemporaryUnavailability(settings: AppSettings, error: unknown): string {
   const baseUrl = settings.baseUrl.trim() || "(empty base URL)";
   const message = errorMessage(error);
-
-  if (/timed out|timeout/i.test(message)) {
-    return settings.provider === "ollama"
-      ? `Ollama at ${baseUrl} is not responding.`
-      : `The configured LLM endpoint at ${baseUrl} is not responding.`;
-  }
 
   if (/fetch failed|connection refused|econnrefused|enotfound|eai_again|socket hang up/i.test(message)) {
     return settings.provider === "ollama"

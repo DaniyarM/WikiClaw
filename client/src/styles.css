@@ -418,17 +418,8 @@ a {
   box-shadow: inset 0 0 0 1px rgba(102, 217, 193, 0.04);
 }
 
-.activity-panel.live.warning {
-  border-color: rgba(255, 170, 122, 0.34);
-  box-shadow: inset 0 0 0 1px rgba(255, 170, 122, 0.08);
-}
-
 .activity-panel summary.live {
   background: linear-gradient(180deg, rgba(102, 217, 193, 0.08), rgba(102, 217, 193, 0.02));
-}
-
-.activity-panel summary.live.warning {
-  background: linear-gradient(180deg, rgba(255, 170, 122, 0.14), rgba(255, 170, 122, 0.03));
 }
 
 .activity-list {
@@ -439,8 +430,9 @@ a {
 
 .activity-item {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 8px;
+  align-items: start;
   padding: 8px 10px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.04);
@@ -488,6 +480,8 @@ a {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
+  justify-self: start;
 }
 
 .activity-live-badge {

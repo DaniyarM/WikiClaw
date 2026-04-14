@@ -153,11 +153,8 @@ export function MessageList(props: MessageListProps) {
             const latestActivityKind = latestActivity?.kind ?? "status";
 
             return (
-              <details
-                className={`activity-panel ${message.pending ? "live" : ""} ${message.pending ? latestActivityKind : ""}`}
-                open={message.pending}
-              >
-                <summary className={`${message.pending ? "live" : ""} ${message.pending ? latestActivityKind : ""}`}>
+              <details className={`activity-panel ${message.pending ? "live" : ""}`} open={message.pending}>
+                <summary className={message.pending ? "live" : ""}>
                   <span>{props.dictionary.thinking}</span>
                   {message.pending ? (
                     <span className={`activity-live-badge ${latestActivityKind}`}>
