@@ -287,6 +287,7 @@ apiRouter.post("/chat/stream", upload.array("files"), async (request, response, 
       userMessage,
       attachments,
       onActivity: (activity) => sendEvent({ type: "activity", activity }),
+      onThinkingToken: (text) => sendEvent({ type: "assistant-thinking-token", text }),
       onToken: (text) => sendEvent({ type: "assistant-token", text }),
     });
 
@@ -295,6 +296,7 @@ apiRouter.post("/chat/stream", upload.array("files"), async (request, response, 
       role: "assistant" as const,
       content: agentResult.assistantContent,
       createdAt: new Date().toISOString(),
+      thinkingSummary: agentResult.thinkingSummary,
       activities: agentResult.activities,
       webResearch: agentResult.webResearch,
     };

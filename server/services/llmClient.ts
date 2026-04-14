@@ -9,6 +9,7 @@ export interface LlmRequest {
   settings: AppSettings;
   messages: LlmMessage[];
   temperature?: number;
+  think?: boolean | string;
 }
 
 const LLM_REQUEST_TIMEOUT_MS = 180_000;
@@ -216,6 +217,7 @@ export async function completeJson<T>(request: LlmRequest): Promise<T> {
 async function streamOpenAiCompatible(
   request: LlmRequest,
   onToken: (token: string) => void,
+  _onThinkingToken?: (token: string) => void,
 ): Promise<string> {
   const response = await fetchWithTimeout(joinUrl(request.settings.baseUrl, "/chat/completions"), {
     method: "POST",
@@ -279,7 +281,11 @@ async function streamOpenAiCompatible(
   return fullText;
 }
 
-async function streamOllama(request: LlmRequest, onToken: (token: string) => void): Promise<string> {
+async function streamOllama(
+  request: LlmRequest,
+  onToken: (token: string) => void,
+  onThinkingToken?: (token: string) => void,
+): Promise<string> {
   const response = await fetchWithTimeout(joinUrl(request.settings.baseUrl, "/api/chat"), {
     method: "POST",
     headers: {
@@ -292,6 +298,7 @@ async function streamOllama(request: LlmRequest, onToken: (token: string) => voi
         temperature: request.temperature ?? request.settings.temperature,
       },
       messages: request.messages,
+      ...(request.think !== undefined ? { think: request.think } : {}),
     }),
   });
 
@@ -321,7 +328,11 @@ async function streamOllama(request: LlmRequest, onToken: (token: string) => voi
       }
 
       try {
-        const payload = JSON.parse(trimmed) as { message?: { content?: string } };
+        const payload = JSON.parse(trimmed) as { message?: { content?: string; thinking?: string } };
+        const thinking = payload.message?.thinking ?? "";
+        if (thinking) {
+          onThinkingToken?.(thinking);
+        }
         const token = payload.message?.content ?? "";
         if (token) {
           fullText += token;
@@ -339,14 +350,15 @@ async function streamOllama(request: LlmRequest, onToken: (token: string) => voi
 export async function streamText(
   request: LlmRequest,
   onToken: (token: string) => void,
+  onThinkingToken?: (token: string) => void,
 ): Promise<string> {
   assertProviderSettings(request.settings);
 
   if (request.settings.provider === "openai-compatible") {
-    return streamOpenAiCompatible(request, onToken);
+    return streamOpenAiCompatible(request, onToken, onThinkingToken);
   }
 
-  return streamOllama(request, onToken);
+  return streamOllama(request, onToken, onThinkingToken);
 }
 
 export async function unloadModel(settings: AppSettings): Promise<void> {

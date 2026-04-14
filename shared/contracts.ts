@@ -53,6 +53,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   createdAt: string;
+  thinkingSummary?: string;
   attachments?: ChatAttachment[];
   activities?: ActivityItem[];
   webResearch?: WebResearchBundle[];
@@ -115,6 +116,11 @@ export interface StreamAssistantTokenEvent {
   text: string;
 }
 
+export interface StreamAssistantThinkingTokenEvent {
+  type: "assistant-thinking-token";
+  text: string;
+}
+
 export interface StreamAssistantFinalEvent {
   type: "assistant-final";
   message: ChatMessage;
@@ -129,6 +135,7 @@ export interface StreamErrorEvent {
 export type StreamEvent =
   | StreamMessageStartEvent
   | StreamActivityEvent
+  | StreamAssistantThinkingTokenEvent
   | StreamAssistantTokenEvent
   | StreamAssistantFinalEvent
   | StreamErrorEvent;

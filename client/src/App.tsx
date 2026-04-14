@@ -97,7 +97,7 @@ export default function App() {
     return () => window.cancelAnimationFrame(rafId);
   }, [currentChat?.id, currentChat?.messages]);
 
-  const dictionary = getDictionary(settings?.language ?? "en");
+  const dictionary = getDictionary(settings?.language ?? "ru");
   const activeWiki = wikis.find((wiki) => wiki.id === activeWikiId) ?? null;
 
   async function handleSelectChat(chatId: string) {
@@ -284,6 +284,7 @@ export default function App() {
                           id: event.messageId,
                           role: "assistant",
                           content: "",
+                          thinkingSummary: "",
                           createdAt: event.createdAt,
                           activities: [],
                           pending: true,
@@ -328,6 +329,27 @@ export default function App() {
                           ? {
                               ...message,
                               content: `${message.content}${event.text}`,
+                            }
+                          : message,
+                      ),
+                    }
+                  : previous,
+              );
+            });
+            return;
+          }
+
+          if (event.type === "assistant-thinking-token") {
+            startTransition(() => {
+              setCurrentChat((previous) =>
+                previous
+                  ? {
+                      ...previous,
+                      messages: previous.messages.map((message) =>
+                        message.id === activeAssistantId
+                          ? {
+                              ...message,
+                              thinkingSummary: `${message.thinkingSummary ?? ""}${event.text}`,
                             }
                           : message,
                       ),

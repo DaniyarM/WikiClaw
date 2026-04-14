@@ -181,6 +181,23 @@ export function MessageList(props: MessageListProps) {
             );
           })() : null}
 
+          {message.role === "assistant" && message.thinkingSummary?.trim() ? (
+            <details
+              className={`thinking-summary-panel ${message.pending && !message.content.trim() ? "live" : ""}`}
+              open={Boolean(message.pending && !message.content.trim())}
+            >
+              <summary className={message.pending && !message.content.trim() ? "live" : ""}>
+                <span>{props.dictionary.thinkingSummary}</span>
+                <span className="thinking-summary-hint">{props.dictionary.thinkingSummaryHint}</span>
+              </summary>
+              <div className="thinking-summary-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {normalizeAssistantMarkdown(message.thinkingSummary)}
+                </ReactMarkdown>
+              </div>
+            </details>
+          ) : null}
+
           <div className="message-body">
             {message.role === "assistant" ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]}>

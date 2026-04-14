@@ -55,11 +55,13 @@ export interface AgentRunInput {
   userMessage: ChatMessage;
   attachments: AttachmentDocument[];
   onActivity: (activity: ActivityItem) => void;
+  onThinkingToken: (token: string) => void;
   onToken: (token: string) => void;
 }
 
 export interface AgentRunResult {
   activities: ActivityItem[];
+  thinkingSummary: string;
   assistantContent: string;
   changedPaths: string[];
   missingTopics: string[];
@@ -111,7 +113,11 @@ function getUiText(language: Language) {
       webSearchFailed: "Web-поиск недоступен",
       webSearchEmpty: "Web-поиск не дал надёжных результатов",
       writingAnswer: "Формирование ответа",
-      writingAnswerDetail: "Ответ выводится в чат.",
+      writingAnswerDetail: "Запрос отправлен модели, ожидаю первый токен.",
+      thinkingSummary: "Thinking",
+      thinkingSummaryDetail: "Показываю поток размышлений, который сама модель возвращает через API.",
+      answerStreaming: "Ответ выводится в чат",
+      answerStreamingDetail: "Модель начала потоковую генерацию ответа.",
       llmUnavailable: "LLM недоступна",
       llmUnavailableDetail: (detail: string) =>
         `${detail} Автоматически переподключаюсь и продолжу работу после восстановления.`,
@@ -145,7 +151,11 @@ function getUiText(language: Language) {
     webSearchFailed: "Web search unavailable",
     webSearchEmpty: "Web search returned no grounded results",
     writingAnswer: "Writing answer",
-    writingAnswerDetail: "The reply is being streamed into chat.",
+    writingAnswerDetail: "The request was sent to the model and is waiting for the first token.",
+    thinkingSummary: "Thinking",
+    thinkingSummaryDetail: "Showing the model thinking stream returned by the provider.",
+    answerStreaming: "Reply streaming into chat",
+    answerStreamingDetail: "The model has started streaming the final answer.",
     llmUnavailable: "LLM unavailable",
     llmUnavailableDetail: (detail: string) =>
       `${detail} I will keep retrying automatically and resume work when the model comes back.`,
@@ -1237,8 +1247,6 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     approvedQueries.length > 0 ? approvedQueries : activeResearchBundles.map((bundle) => bundle.query),
   );
 
-  emit("status", uiText.writingAnswer, uiText.writingAnswerDetail);
-
   const fallbackAssistantContent = buildFinalAnswer({
     language: input.settings.language,
     intent: decision.intent,
@@ -1249,8 +1257,14 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     webBundles: activeResearchBundles,
   });
 
+  emit("status", uiText.writingAnswer, uiText.writingAnswerDetail);
+
+  let thinkingSummary = "";
+  let streamedAnyThinkingToken = false;
   let assistantContent = "";
   let streamedAnyToken = false;
+  let answerStreamingEmitted = false;
+  let thinkingStreamingEmitted = false;
   try {
     assistantContent = await executeLlmWithRecovery(
       () =>
@@ -1268,15 +1282,29 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
               webBundles: activeResearchBundles,
             }),
             temperature: 0.15,
+            think: input.settings.provider === "ollama" ? true : undefined,
           },
           (token) => {
             streamedAnyToken = true;
+            if (!answerStreamingEmitted) {
+              emit("status", uiText.answerStreaming, uiText.answerStreamingDetail);
+              answerStreamingEmitted = true;
+            }
             assistantContent += token;
             input.onToken(token);
           },
+          (thinkingToken) => {
+            streamedAnyThinkingToken = true;
+            if (!thinkingStreamingEmitted) {
+              emit("status", uiText.thinkingSummary, uiText.thinkingSummaryDetail);
+              thinkingStreamingEmitted = true;
+            }
+            thinkingSummary += thinkingToken;
+            input.onThinkingToken(thinkingToken);
+          },
         ),
       {
-        allowRetry: () => !streamedAnyToken,
+        allowRetry: () => !streamedAnyToken && !streamedAnyThinkingToken,
       },
     );
   } catch {
@@ -1295,6 +1323,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
 
   return {
     activities,
+    thinkingSummary: thinkingSummary.trim(),
     assistantContent,
     changedPaths: finalChangedPaths,
     missingTopics: draft.missingTopics ?? [],

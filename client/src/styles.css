@@ -388,6 +388,63 @@ a {
   background: transparent;
 }
 
+.thinking-summary-panel {
+  margin-bottom: 10px;
+  border: 1px solid rgba(164, 176, 198, 0.16);
+  border-radius: 14px;
+  background: rgba(13, 18, 26, 0.92);
+  overflow: hidden;
+}
+
+.thinking-summary-panel summary {
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted-strong);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.thinking-summary-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-summary-panel.live {
+  border-color: rgba(102, 217, 193, 0.2);
+}
+
+.thinking-summary-panel summary.live {
+  background: linear-gradient(180deg, rgba(102, 217, 193, 0.08), rgba(102, 217, 193, 0.02));
+}
+
+.thinking-summary-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.thinking-summary-body {
+  padding: 0 12px 12px;
+  color: var(--muted-strong);
+}
+
+.thinking-summary-body > :first-child {
+  margin-top: 0;
+}
+
+.thinking-summary-body > :last-child {
+  margin-bottom: 0;
+}
+
+.thinking-summary-body p,
+.thinking-summary-body li {
+  color: var(--muted-strong);
+}
+
 .activity-panel {
   margin-bottom: 10px;
   border: 1px solid rgba(102, 217, 193, 0.16);
