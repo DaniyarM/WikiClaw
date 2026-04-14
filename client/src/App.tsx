@@ -233,6 +233,7 @@ export default function App() {
 
     setSending(true);
     setError(null);
+    autoScrollRef.current = true;
 
     const localUserMessage: UiMessage = {
       id: `local-user-${crypto.randomUUID()}`,
