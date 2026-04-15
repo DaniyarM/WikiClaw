@@ -47,6 +47,7 @@ interface ContextSectionBudget {
 
 interface DraftContextBudget {
   attachments: ContextSectionBudget;
+  attachmentEvidence: ContextSectionBudget;
   pages: ContextSectionBudget;
   web: ContextSectionBudget;
 }
@@ -62,6 +63,11 @@ const STANDARD_DRAFT_CONTEXT_BUDGET: DraftContextBudget = {
     totalChars: 12_000,
     perItemChars: 4_000,
     minItemChars: 700,
+  },
+  attachmentEvidence: {
+    totalChars: 8_000,
+    perItemChars: 2_600,
+    minItemChars: 900,
   },
   pages: {
     totalChars: 18_000,
@@ -80,6 +86,11 @@ const COMPACT_DRAFT_CONTEXT_BUDGET: DraftContextBudget = {
     totalChars: 6_000,
     perItemChars: 2_200,
     minItemChars: 400,
+  },
+  attachmentEvidence: {
+    totalChars: 4_000,
+    perItemChars: 1_500,
+    minItemChars: 600,
   },
   pages: {
     totalChars: 9_000,
@@ -116,6 +127,19 @@ type ChunkDigest = CachedChunkDigest;
 interface AttachmentDigest extends CachedAttachmentDigest {
   attachmentId: string;
   name: string;
+  evidenceChunks: AttachmentEvidenceChunk[];
+}
+
+interface AttachmentEvidenceChunk {
+  attachmentId: string;
+  attachmentName: string;
+  chunkIndex: number;
+  label: string;
+  content: string;
+  summary: string;
+  entities: string[];
+  keyPoints: string[];
+  relationships: string[];
 }
 
 export interface AgentRunInput {
@@ -140,6 +164,15 @@ export interface AgentRunResult {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLlmStalled(error: unknown): boolean {
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message.toLowerCase() : `${error ?? ""}`.toLowerCase();
+  return message.includes("timed out") || message.includes("stream stalled") || message.includes("stream exceeded");
 }
 
 function createActivity(kind: ActivityItem["kind"], title: string, detail?: string): ActivityItem {
@@ -185,6 +218,12 @@ function getUiText(language: Language) {
       draftingProgress: (seconds: number) => `Подготовка всё ещё идёт (${seconds} с)`,
       draftingProgressDetailWrite: "Модель формирует безопасные правки файлов и итоговый ответ.",
       draftingProgressDetailRead: "Модель формирует ответ на основе текущей wiki.",
+      persistingWikiChanges: "Сохранение изменений wiki",
+      persistingWikiChangesDetail: "Правки модели записываются в файлы базы знаний.",
+      refreshingWikiIndex: "Переиндексация wiki",
+      refreshingWikiIndexDetail: "Обновляю внутренний индекс после изменений файлов.",
+      savingOperationLog: "Обновление системного лога",
+      savingOperationLogDetail: "Записываю журнал операции и итоговое состояние изменений.",
       updatedFiles: "Обновлены файлы wiki",
       missingEvidence: "Пока не хватает подтверждённых данных",
       searchingWeb: "Выполняется web-поиск",
@@ -199,6 +238,9 @@ function getUiText(language: Language) {
       llmUnavailable: "LLM недоступна",
       llmUnavailableDetail: (detail: string) =>
         `${detail} Автоматически переподключаюсь и продолжу работу после восстановления.`,
+      llmStalled: "LLM перестала отвечать",
+      llmStalledDetail: (detail: string) =>
+        `${detail} Прерываю зависший шаг и либо перейду к fallback-ответу, либо отдам ошибку в поток.`,
       llmRecovered: "Связь с LLM восстановлена",
       llmRecoveredDetail: "Продолжаю работу с того же шага.",
       compactingContext: "Сжимаю контекст запроса",
@@ -234,6 +276,12 @@ function getUiText(language: Language) {
     draftingProgress: (seconds: number) => `Preparation still running (${seconds}s)`,
     draftingProgressDetailWrite: "The model is preparing safe file edits and the final reply.",
     draftingProgressDetailRead: "The model is preparing an answer from the current wiki.",
+    persistingWikiChanges: "Saving wiki changes",
+    persistingWikiChangesDetail: "Writing the model's grounded edits into wiki files.",
+    refreshingWikiIndex: "Refreshing wiki index",
+    refreshingWikiIndexDetail: "Rebuilding the internal index after file changes.",
+    savingOperationLog: "Updating system log",
+    savingOperationLogDetail: "Recording the operation log and final changed paths.",
     updatedFiles: "Updated wiki files",
     missingEvidence: "Still missing grounded evidence",
     searchingWeb: "Searching the web",
@@ -248,6 +296,9 @@ function getUiText(language: Language) {
     llmUnavailable: "LLM unavailable",
     llmUnavailableDetail: (detail: string) =>
       `${detail} I will keep retrying automatically and resume work when the model comes back.`,
+    llmStalled: "LLM response stalled",
+    llmStalledDetail: (detail: string) =>
+      `${detail} I am aborting the stuck step and will either fall back or surface the error.`,
     llmRecovered: "LLM connection restored",
     llmRecoveredDetail: "Resuming work from the same step.",
     compactingContext: "Compacting request context",
@@ -909,6 +960,23 @@ function compactContextText(text: string, maxChars: number): string {
     .trimStart()}`;
 }
 
+function truncateStructuredText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\u0000/g, " ").trim();
+  if (maxChars <= 0 || !normalized) {
+    return "";
+  }
+
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  if (maxChars < 32) {
+    return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+  }
+
+  return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
 function allocateContextBudget(remainingBudget: number, itemsLeft: number, budget: ContextSectionBudget): number {
   if (itemsLeft <= 0) {
     return budget.minItemChars;
@@ -998,6 +1066,7 @@ function buildDraftContext(options: {
   userRequest: string;
   recentChat: string;
   attachmentDigests: AttachmentDigest[];
+  selectedAttachmentEvidence: AttachmentEvidenceChunk[];
   rawAttachmentsFallback: AttachmentDocument[];
   relevantPages: Awaited<ReturnType<typeof searchRelevantPages>>;
   diagnostics: { pageCount: number; missingLinks: string[] };
@@ -1013,9 +1082,13 @@ function buildDraftContext(options: {
     `RECENT CHAT:\n${options.recentChat}`,
     `ATTACHMENTS:\n${
       options.attachmentDigests.length > 0
-        ? formatAttachmentDigests(options.attachmentDigests, "detailed")
+        ? formatAttachmentDigests(options.attachmentDigests, options.budget.attachments, "detailed")
         : formatAttachments(options.rawAttachmentsFallback, options.budget.attachments)
     }`,
+    `ATTACHMENT EVIDENCE:\n${formatAttachmentEvidence(
+      options.selectedAttachmentEvidence,
+      options.budget.attachmentEvidence,
+    )}`,
     `RELEVANT PAGES:\n${formatRelevantPages(options.relevantPages, options.budget.pages)}`,
     `WIKI DIAGNOSTICS:\nPage count: ${options.diagnostics.pageCount}\nMissing links: ${options.diagnostics.missingLinks.join(", ") || "none"}`,
     `WEB NOTES:\n${formatWebResearch(options.activeResearchBundles, options.budget.web)}`,
@@ -1096,53 +1169,225 @@ function dedupeStrings(values: string[], limit = 12): string[] {
   return next;
 }
 
-function formatAttachmentDigests(digests: AttachmentDigest[], mode: "compact" | "detailed"): string {
+function tokenizeForEvidence(input: string): string[] {
+  return [...(input.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])];
+}
+
+function buildAttachmentEvidenceChunks(
+  attachment: AttachmentDocument,
+  chunks: Array<{ index: number; label: string; content: string }>,
+  chunkDigests: ChunkDigest[],
+): AttachmentEvidenceChunk[] {
+  return chunks.map((chunk, index) => {
+    const digest = chunkDigests[index];
+    return {
+      attachmentId: attachment.id,
+      attachmentName: attachment.name,
+      chunkIndex: chunk.index,
+      label: digest?.label?.trim() || chunk.label,
+      content: chunk.content,
+      summary: digest?.summary?.trim() || compactContextText(chunk.content, 320),
+      entities: dedupeStrings(digest?.entities ?? [], 8),
+      keyPoints: dedupeStrings(digest?.keyPoints ?? [], 5),
+      relationships: dedupeStrings(digest?.relationships ?? [], 5),
+    };
+  });
+}
+
+function scoreAttachmentEvidenceChunk(
+  chunk: AttachmentEvidenceChunk,
+  queryTokens: string[],
+  attachmentTerms: string[],
+): number {
+  const body = [
+    chunk.label,
+    chunk.summary,
+    chunk.content,
+    ...chunk.entities,
+    ...chunk.keyPoints,
+    ...chunk.relationships,
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  let score = 0;
+  for (const token of queryTokens) {
+    if (body.includes(token)) {
+      score += 8;
+    }
+  }
+  for (const term of attachmentTerms.map((item) => item.toLowerCase())) {
+    if (body.includes(term)) {
+      score += 3;
+    }
+  }
+
+  score += Math.min(chunk.entities.length, 6);
+  score += Math.min(chunk.keyPoints.length, 4);
+  score += Math.min(chunk.relationships.length, 3);
+  if (chunk.chunkIndex === 0) {
+    score += 4;
+  }
+  return score;
+}
+
+function selectAttachmentEvidence(options: {
+  attachmentDigests: AttachmentDigest[];
+  userRequest: string;
+  decision: PlannerDecision;
+}): AttachmentEvidenceChunk[] {
+  if (options.attachmentDigests.length === 0) {
+    return [];
+  }
+
+  const queryTokens = tokenizeForEvidence(
+    [options.userRequest, options.decision.goal, ...(options.decision.relevantTerms ?? [])].join(" "),
+  );
+  const selected: AttachmentEvidenceChunk[] = [];
+
+  for (const digest of options.attachmentDigests) {
+    const attachmentTerms = dedupeStrings([digest.title, ...digest.keyTopics, ...digest.entities], 14);
+    const ranked = [...digest.evidenceChunks]
+      .map((chunk) => ({
+        chunk,
+        score: scoreAttachmentEvidenceChunk(chunk, queryTokens, attachmentTerms),
+      }))
+      .sort((a, b) => b.score - a.score || a.chunk.chunkIndex - b.chunk.chunkIndex);
+
+    const perAttachment = ranked.slice(0, Math.min(3, ranked.length)).map((item) => item.chunk);
+    if (perAttachment.length === 0 && digest.evidenceChunks[0]) {
+      selected.push(digest.evidenceChunks[0]);
+      continue;
+    }
+
+    const seen = new Set<number>();
+    for (const chunk of perAttachment) {
+      if (seen.has(chunk.chunkIndex)) {
+        continue;
+      }
+      seen.add(chunk.chunkIndex);
+      selected.push(chunk);
+    }
+  }
+
+  return selected;
+}
+
+function formatAttachmentEvidence(
+  evidenceChunks: AttachmentEvidenceChunk[],
+  budget: ContextSectionBudget,
+): string {
+  if (evidenceChunks.length === 0) {
+    return "No attachment evidence excerpts selected.";
+  }
+
+  let remainingBudget = budget.totalChars;
+
+  return evidenceChunks
+    .map((chunk, index) => {
+      const itemsLeft = evidenceChunks.length - index;
+      const itemBudget = allocateContextBudget(remainingBudget, itemsLeft, budget);
+      const summaryBudget = Math.min(220, Math.max(100, Math.floor(itemBudget * 0.22)));
+      const contentBudget = Math.max(220, itemBudget - summaryBudget - 180);
+      const block = [
+        `FILE: ${chunk.attachmentName}`,
+        `CHUNK: ${chunk.label}`,
+        `SUMMARY: ${compactContextText(chunk.summary, summaryBudget)}`,
+        chunk.entities.length > 0 ? `ENTITIES: ${truncateStructuredText(chunk.entities.join(", "), 160)}` : "",
+        `CONTENT:\n${compactContextText(chunk.content, contentBudget)}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      remainingBudget = Math.max(0, remainingBudget - block.length);
+      return block;
+    })
+    .join("\n\n---\n\n");
+}
+
+function formatAttachmentDigests(
+  digests: AttachmentDigest[],
+  budget: ContextSectionBudget,
+  mode: "compact" | "detailed",
+): string {
   if (digests.length === 0) {
     return "No attachment digests.";
   }
 
+  let remainingBudget = budget.totalChars;
+
   return digests
-    .map((digest) => {
+    .map((digest, index) => {
+      const itemsLeft = digests.length - index;
+      const itemBudget = allocateContextBudget(remainingBudget, itemsLeft, budget);
+      const summaryBudget = Math.min(360, Math.max(180, Math.floor(itemBudget * 0.24)));
+      const listBudget = Math.min(220, Math.max(80, Math.floor(itemBudget * 0.16)));
+      const bulletBudget = Math.min(180, Math.max(90, Math.floor(itemBudget * 0.14)));
+      const maxChunkDigests =
+        mode === "detailed"
+          ? Math.max(2, Math.min(6, Math.floor(itemBudget / 1_200)))
+          : Math.max(1, Math.min(2, Math.floor(itemBudget / 1_800)));
       const lines = [
         `FILE: ${digest.name}`,
         `INFERRED KIND: ${digest.inferredKind}`,
         `TITLE: ${digest.title}`,
-        `SUMMARY: ${digest.summary}`,
+        `SUMMARY: ${compactContextText(digest.summary, summaryBudget)}`,
       ];
 
       if (digest.keyTopics.length > 0) {
-        lines.push(`TOPICS: ${digest.keyTopics.join(", ")}`);
+        lines.push(`TOPICS: ${truncateStructuredText(digest.keyTopics.join(", "), listBudget)}`);
       }
 
       if (digest.entities.length > 0) {
-        lines.push(`ENTITIES: ${digest.entities.join(", ")}`);
+        lines.push(`ENTITIES: ${truncateStructuredText(digest.entities.join(", "), listBudget)}`);
       }
 
       if (digest.relationships.length > 0) {
-        lines.push("RELATIONSHIPS:", ...digest.relationships.map((item) => `- ${item}`));
+        lines.push(
+          "RELATIONSHIPS:",
+          ...digest.relationships
+            .slice(0, mode === "detailed" ? 4 : 2)
+            .map((item) => `- ${truncateStructuredText(item, bulletBudget)}`),
+        );
       }
 
       if (digest.highlights.length > 0) {
-        lines.push("HIGHLIGHTS:", ...digest.highlights.map((item) => `- ${item}`));
+        lines.push(
+          "HIGHLIGHTS:",
+          ...digest.highlights
+            .slice(0, mode === "detailed" ? 5 : 3)
+            .map((item) => `- ${truncateStructuredText(item, bulletBudget)}`),
+        );
       }
 
       if (digest.missingContext.length > 0) {
-        lines.push("MISSING CONTEXT:", ...digest.missingContext.map((item) => `- ${item}`));
+        lines.push(
+          "MISSING CONTEXT:",
+          ...digest.missingContext
+            .slice(0, mode === "detailed" ? 4 : 2)
+            .map((item) => `- ${truncateStructuredText(item, Math.max(80, Math.min(160, bulletBudget)))}`),
+        );
       }
 
       if (mode === "detailed" && digest.chunkDigests.length > 0) {
         lines.push(
           "CHUNK DIGESTS:",
-          ...digest.chunkDigests.map(
+          ...digest.chunkDigests.slice(0, maxChunkDigests).map(
             (chunk, index) =>
-              `${index + 1}. ${chunk.label}\n   Summary: ${chunk.summary}${
-                chunk.keyPoints.length > 0 ? `\n   Key points: ${chunk.keyPoints.join("; ")}` : ""
-              }${chunk.entities.length > 0 ? `\n   Entities: ${chunk.entities.join(", ")}` : ""}`,
+              `${index + 1}. ${truncateStructuredText(chunk.label, 80)}\n   Summary: ${compactContextText(
+                chunk.summary,
+                Math.min(220, Math.max(120, Math.floor(itemBudget / Math.max(maxChunkDigests * 3, 1)))),
+              )}${
+                chunk.keyPoints.length > 0
+                  ? `\n   Key points: ${truncateStructuredText(chunk.keyPoints.join("; "), 160)}`
+                  : ""
+              }${chunk.entities.length > 0 ? `\n   Entities: ${truncateStructuredText(chunk.entities.join(", "), 140)}` : ""}`,
           ),
         );
       }
 
-      return lines.join("\n");
+      const block = truncateStructuredText(lines.join("\n"), itemBudget);
+      remainingBudget = Math.max(0, remainingBudget - block.length);
+      return block;
     })
     .join("\n\n---\n\n");
 }
@@ -1342,7 +1587,7 @@ function draftingPrompt(language: Language): string {
   return [
     "You are WikiClaw's wiki-maintenance agent for a general knowledge base.",
     "Internal instructions are in English. The human-facing response must be in the requested language.",
-    "You receive conversation context, relevant wiki pages, diagnostics, attachment digests distilled from source files, and optional public web notes.",
+    "You receive conversation context, relevant wiki pages, diagnostics, attachment digests distilled from source files, selected raw attachment evidence chunks, and optional public web notes.",
     "Your job is to update the wiki only when grounded and useful.",
     "Rules:",
     "- Prefer updating existing pages over creating new pages.",
@@ -1351,6 +1596,7 @@ function draftingPrompt(language: Language): string {
     "- Use Obsidian-friendly markdown and wiki links like [[Concept]] when targets already exist.",
     "- Do not edit index.md, log.md, AGENTS.md, raw/, or .wikiclaw/.",
     "- For ingest requests: integrate attached or provided material into the existing wiki.",
+    "- Use raw attachment evidence excerpts as the highest-priority grounding for file content when they are available; use attachment digests for document-level synthesis and navigation.",
     "- For lint or refresh requests: actively repair grounded cross-links, enrich incomplete pages from existing evidence, and update pages when the current wiki already supports it.",
     "- For query requests: do not write files unless the user explicitly asks to save the result.",
     "- When web research is provided, treat only those URLs/snippets/page extracts as external evidence.",
@@ -1404,6 +1650,13 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
         return result;
       } catch (error) {
         if (!isLlmTemporarilyUnavailable(error) || (options?.allowRetry && !options.allowRetry())) {
+          if (isLlmStalled(error)) {
+            emit(
+              "warning",
+              uiText.llmStalled,
+              uiText.llmStalledDetail(error instanceof Error ? error.message : `${error ?? "Unknown LLM error"}`),
+            );
+          }
           throw error;
         }
 
@@ -1441,10 +1694,16 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     for (const [attachmentIndex, attachment] of input.attachments.entries()) {
       const cached = await loadAttachmentDigestCache(input.settings, attachment).catch(() => null);
       if (cached) {
+        const cachedStructure = buildAttachmentStructure(attachment.name, attachment.extractedText);
         const cachedDigest: AttachmentDigest = {
           attachmentId: attachment.id,
           name: attachment.name,
           ...cached.digest,
+          evidenceChunks: buildAttachmentEvidenceChunks(
+            attachment,
+            cachedStructure.chunks,
+            cached.digest.chunkDigests,
+          ),
         };
         emit(
           "status",
@@ -1573,6 +1832,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
         highlights: dedupeStrings(chunkDigests.flatMap((chunk) => chunk.keyPoints), 10),
         missingContext: dedupeStrings(chunkDigests.flatMap((chunk) => chunk.missingContext), 8),
         chunkDigests,
+        evidenceChunks: buildAttachmentEvidenceChunks(attachment, chunks, chunkDigests),
       };
 
       try {
@@ -1625,6 +1885,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
             [...documentDigest.missingContext, ...(Array.isArray(response.missingContext) ? response.missingContext.map(String) : [])],
             10,
           ),
+          evidenceChunks: documentDigest.evidenceChunks,
         };
       } catch {
         // Fall back to the local digest assembled from chunk summaries.
@@ -1667,7 +1928,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     `USER MESSAGE:\n${input.userMessage.content}`,
     `ATTACHMENTS:\n${
       attachmentDigests.length > 0
-        ? formatAttachmentDigests(attachmentDigests, "compact")
+        ? formatAttachmentDigests(attachmentDigests, PLANNER_ATTACHMENT_BUDGET, "compact")
         : formatAttachments(input.attachments, PLANNER_ATTACHMENT_BUDGET)
     }`,
     `RECENT CHAT:\n${compactConversation(input.chat.messages)}`,
@@ -1786,6 +2047,11 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
   );
 
   const recentChat = compactConversation(input.chat.messages);
+  const selectedAttachmentEvidence = selectAttachmentEvidence({
+    attachmentDigests,
+    userRequest: input.userMessage.content,
+    decision,
+  });
   const runDraftPass = (budget: DraftContextBudget) =>
     completeJsonWithRetry<AgentDraft>((request) => completeTextWithRecovery(request), [
       {
@@ -1799,6 +2065,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
           userRequest: input.userMessage.content,
           recentChat,
           attachmentDigests,
+          selectedAttachmentEvidence,
           rawAttachmentsFallback: input.attachments,
           relevantPages,
           diagnostics,
@@ -1842,9 +2109,11 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     });
   }
 
-  const changedPaths = decision.needsWikiWrite
-    ? await applyWikiWrites(input.settings, groundedOperations)
-    : [];
+  let changedPaths: string[] = [];
+  if (decision.needsWikiWrite && groundedOperations.length > 0) {
+    emit("status", uiText.persistingWikiChanges, uiText.persistingWikiChangesDetail);
+    changedPaths = await applyWikiWrites(input.settings, groundedOperations, { reindex: false });
+  }
   if (changedPaths.length > 0) {
     emit("file", uiText.updatedFiles, changedPaths.join(", "));
   }
@@ -1871,7 +2140,8 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
 
   let notePaths: string[] = [];
   if (autoNote) {
-    notePaths = await applyWikiWrites(input.settings, [autoNote]);
+    emit("status", uiText.persistingWikiChanges, uiText.persistingWikiChangesDetail);
+    notePaths = await applyWikiWrites(input.settings, [autoNote], { reindex: false });
     if (notePaths.length > 0) {
       emit("file", uiText.updatedFiles, notePaths.join(", "));
     }
@@ -1879,6 +2149,12 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
 
   const finalChangedPaths = [...changedPaths, ...notePaths];
 
+  if (finalChangedPaths.length > 0) {
+    emit("status", uiText.refreshingWikiIndex, uiText.refreshingWikiIndexDetail);
+    await reindexWiki(input.settings);
+  }
+
+  emit("status", uiText.savingOperationLog, uiText.savingOperationLogDetail);
   await appendLogEntry(
     input.settings,
     decision.intent === "chat" ? "query" : decision.intent,

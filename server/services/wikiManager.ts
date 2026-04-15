@@ -70,6 +70,10 @@ export interface FileOperation {
   reason: string;
 }
 
+export interface ApplyWikiWritesOptions {
+  reindex?: boolean;
+}
+
 export interface WikiDiagnostics {
   pageCount: number;
   missingLinks: string[];
@@ -528,7 +532,11 @@ function hasSubstantiveContent(content: string): boolean {
   return plain.length >= 80 && !/^todo\b/i.test(plain);
 }
 
-export async function applyWikiWrites(settings: AppSettings, operations: FileOperation[]): Promise<string[]> {
+export async function applyWikiWrites(
+  settings: AppSettings,
+  operations: FileOperation[],
+  options: ApplyWikiWritesOptions = {},
+): Promise<string[]> {
   await ensureWikiScaffold(settings);
 
   const applied: string[] = [];
@@ -553,7 +561,9 @@ export async function applyWikiWrites(settings: AppSettings, operations: FileOpe
     applied.push(relativePath);
   }
 
-  await reindexWiki(settings);
+  if (options.reindex !== false) {
+    await reindexWiki(settings);
+  }
   return applied;
 }
 

@@ -12,7 +12,20 @@ export interface LlmRequest {
   think?: boolean | string;
 }
 
-const LLM_REQUEST_TIMEOUT_MS = 180_000;
+const LLM_REQUEST_TIMEOUT_MS = positiveEnvInt("WIKICLAW_LLM_REQUEST_TIMEOUT_MS", 1_200_000);
+const LLM_RESPONSE_BODY_TIMEOUT_MS = positiveEnvInt("WIKICLAW_LLM_BODY_TIMEOUT_MS", 1_200_000);
+const LLM_STREAM_IDLE_TIMEOUT_MS = positiveEnvInt("WIKICLAW_LLM_STREAM_IDLE_TIMEOUT_MS", 600_000);
+const LLM_STREAM_TOTAL_TIMEOUT_MS = positiveEnvInt("WIKICLAW_LLM_STREAM_TOTAL_TIMEOUT_MS", 3_600_000);
+
+function positiveEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function joinUrl(baseUrl: string, suffix: string): string {
   return `${baseUrl.replace(/\/+$/g, "")}${suffix}`;
@@ -78,8 +91,35 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : `${error ?? "Unknown error"}`;
 }
 
+function createTimeoutError(message: string): Error {
+  const error = new Error(message);
+  error.name = "TimeoutError";
+  return error;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(createTimeoutError(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 async function readErrorText(response: Response): Promise<string> {
-  const text = (await response.text()).trim();
+  const text = (await withTimeout(
+    response.text(),
+    LLM_RESPONSE_BODY_TIMEOUT_MS,
+    `LLM error response timed out after ${LLM_RESPONSE_BODY_TIMEOUT_MS}ms`,
+  )).trim();
   if (!text) {
     return `HTTP ${response.status}`;
   }
@@ -199,7 +239,13 @@ async function callOpenAiCompatible(request: LlmRequest): Promise<string> {
     throw new Error(`LLM request failed with ${response.status}: ${await readErrorText(response)}`);
   }
 
-  const data = (await response.json()) as {
+  const data = (await withTimeout(
+    response.json() as Promise<{
+      choices?: Array<{ message?: { content?: unknown } }>;
+    }>,
+    LLM_RESPONSE_BODY_TIMEOUT_MS,
+    `LLM response body timed out after ${LLM_RESPONSE_BODY_TIMEOUT_MS}ms`,
+  )) as {
     choices?: Array<{ message?: { content?: unknown } }>;
   };
 
@@ -227,7 +273,13 @@ async function callOllama(request: LlmRequest): Promise<string> {
     throw new Error(`Ollama request failed with ${response.status}: ${await readErrorText(response)}`);
   }
 
-  const data = (await response.json()) as {
+  const data = (await withTimeout(
+    response.json() as Promise<{
+      message?: { content?: string };
+    }>,
+    LLM_RESPONSE_BODY_TIMEOUT_MS,
+    `Ollama response body timed out after ${LLM_RESPONSE_BODY_TIMEOUT_MS}ms`,
+  )) as {
     message?: { content?: string };
   };
 
@@ -276,9 +328,22 @@ async function streamOpenAiCompatible(
   const reader = response.body.getReader();
   let buffer = "";
   let fullText = "";
+  const startedAt = Date.now();
 
   while (true) {
-    const { done, value } = await reader.read();
+    if (Date.now() - startedAt > LLM_STREAM_TOTAL_TIMEOUT_MS) {
+      await reader.cancel("LLM stream total timeout").catch(() => undefined);
+      throw createTimeoutError(`LLM stream exceeded ${LLM_STREAM_TOTAL_TIMEOUT_MS}ms`);
+    }
+
+    const { done, value } = await withTimeout(
+      reader.read(),
+      LLM_STREAM_IDLE_TIMEOUT_MS,
+      `LLM stream stalled for ${LLM_STREAM_IDLE_TIMEOUT_MS}ms`,
+    ).catch(async (error) => {
+      await reader.cancel(error instanceof Error ? error.message : "LLM stream stalled").catch(() => undefined);
+      throw error;
+    });
     if (done) {
       break;
     }
@@ -345,9 +410,22 @@ async function streamOllama(
   const reader = response.body.getReader();
   let buffer = "";
   let fullText = "";
+  const startedAt = Date.now();
 
   while (true) {
-    const { done, value } = await reader.read();
+    if (Date.now() - startedAt > LLM_STREAM_TOTAL_TIMEOUT_MS) {
+      await reader.cancel("Ollama stream total timeout").catch(() => undefined);
+      throw createTimeoutError(`Ollama stream exceeded ${LLM_STREAM_TOTAL_TIMEOUT_MS}ms`);
+    }
+
+    const { done, value } = await withTimeout(
+      reader.read(),
+      LLM_STREAM_IDLE_TIMEOUT_MS,
+      `Ollama stream stalled for ${LLM_STREAM_IDLE_TIMEOUT_MS}ms`,
+    ).catch(async (error) => {
+      await reader.cancel(error instanceof Error ? error.message : "Ollama stream stalled").catch(() => undefined);
+      throw error;
+    });
     if (done) {
       break;
     }
