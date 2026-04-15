@@ -78,6 +78,27 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : `${error ?? "Unknown error"}`;
 }
 
+async function readErrorText(response: Response): Promise<string> {
+  const text = (await response.text()).trim();
+  if (!text) {
+    return `HTTP ${response.status}`;
+  }
+
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+    if (typeof parsed.error === "string" && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+    if (typeof parsed.message === "string" && parsed.message.trim()) {
+      return parsed.message.trim();
+    }
+  } catch {
+    // Fall back to the raw body.
+  }
+
+  return text;
+}
+
 async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = LLM_REQUEST_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error(`LLM request timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -124,6 +145,20 @@ export function isLlmTemporarilyUnavailable(error: unknown): boolean {
   );
 }
 
+export function isLlmInputLimitError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+
+  return (
+    (message.includes("input") && (message.includes("too long") || message.includes("too large") || message.includes("error"))) ||
+    message.includes("context length") ||
+    message.includes("context window") ||
+    message.includes("maximum context length") ||
+    message.includes("prompt is too long") ||
+    message.includes("token limit") ||
+    (message.includes("exceeds") && message.includes("context"))
+  );
+}
+
 export function describeLlmTemporaryUnavailability(settings: AppSettings, error: unknown): string {
   const baseUrl = settings.baseUrl.trim() || "(empty base URL)";
   const message = errorMessage(error);
@@ -161,7 +196,7 @@ async function callOpenAiCompatible(request: LlmRequest): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error(`LLM request failed with ${response.status}: ${await response.text()}`);
+    throw new Error(`LLM request failed with ${response.status}: ${await readErrorText(response)}`);
   }
 
   const data = (await response.json()) as {
@@ -189,7 +224,7 @@ async function callOllama(request: LlmRequest): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error(`Ollama request failed with ${response.status}: ${await response.text()}`);
+    throw new Error(`Ollama request failed with ${response.status}: ${await readErrorText(response)}`);
   }
 
   const data = (await response.json()) as {
@@ -234,7 +269,7 @@ async function streamOpenAiCompatible(
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`LLM stream failed with ${response.status}: ${await response.text()}`);
+    throw new Error(`LLM stream failed with ${response.status}: ${await readErrorText(response)}`);
   }
 
   const decoder = new TextDecoder();
@@ -303,7 +338,7 @@ async function streamOllama(
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`Ollama stream failed with ${response.status}: ${await response.text()}`);
+    throw new Error(`Ollama stream failed with ${response.status}: ${await readErrorText(response)}`);
   }
 
   const decoder = new TextDecoder();
@@ -378,6 +413,6 @@ export async function unloadModel(settings: AppSettings): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new Error(`Ollama unload failed with ${response.status}: ${await response.text()}`);
+    throw new Error(`Ollama unload failed with ${response.status}: ${await readErrorText(response)}`);
   }
 }

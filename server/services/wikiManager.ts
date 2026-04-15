@@ -210,6 +210,10 @@ function contentPriority(entry: WikiPageIndexEntry): number {
   return 0;
 }
 
+function isKnowledgePageEntry(entry: WikiPageIndexEntry): boolean {
+  return entry.path.startsWith("pages/");
+}
+
 async function writeGeneratedIndex(settings: AppSettings, entries: WikiPageIndexEntry[]): Promise<void> {
   const dirs = wikiDirs(settings);
   const lines = ["# Index", "", `Total pages: ${entries.length}`, ""];
@@ -366,7 +370,7 @@ export async function searchRelevantPages(
   extraTerms: string[],
   limit: number,
 ): Promise<RelevantPage[]> {
-  const entries = await getPageIndex(settings);
+  const entries = (await getPageIndex(settings)).filter(isKnowledgePageEntry);
   const tokens = tokenize([query, ...extraTerms].join(" "));
 
   const scored = entries
@@ -381,6 +385,10 @@ export async function searchRelevantPages(
     .filter((item) => item.score > 0 || tokens.length === 0);
 
   const selected = scored.length > 0 ? scored : entries.slice(-limit).map((entry) => ({ entry, score: 0 }));
+
+  if (selected.length === 0) {
+    return [];
+  }
 
   return Promise.all(
     selected.map(async ({ entry }) => {
